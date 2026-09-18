@@ -1,0 +1,36 @@
+[project]
+name = "shadowscout"
+version = "0.1.0"
+description = "Autonomous Hidden API Reverse-Engineering & High-Speed Scraper Synthesizer"
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [
+    { name = "Nicodemus", email = "dev@108studio.id" }
+]
+keywords = ["scraping", "reverse-engineering", "api", "playwright", "httpx", "agentic", "data-engineering", "pydantic", "mcp"]
+dependencies = [
+    "fastapi>=0.111.0",
+    "httpx>=0.27.0",
+    "jinja2>=3.1.4",
+    "playwright>=1.44.0",
+    "pydantic>=2.7.0",
+    "rich>=13.7.0",
+    "typer>=0.12.0",
+    "uvicorn>=0.30.0",
+]
+
+[project.scripts]
+shadowscout = "shadowscout.main:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/shadowscout"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.2.0",
+    "pytest-asyncio>=0.23.0",
+]
