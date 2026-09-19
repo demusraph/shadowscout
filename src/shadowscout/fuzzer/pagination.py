@@ -71,18 +71,29 @@ async def detect_pagination_strategy(
             default_size = 20
 
     # 2. Inspect response body sample for total count or cursor links
+    # FIX #1 & FIX #5: Match method for probe (POST if candidate is POST) and skip probing on PUT/PATCH/DELETE
     candidate_response_data: Optional[Dict[str, Any]] = None
-    try:
-        async with httpx.AsyncClient(timeout=timeout_seconds) as probe_client:
-            probe_res = await probe_client.get(
-                candidate.url,
-                headers=essential_headers,
-                params=params,
-            )
-            if probe_res.status_code == 200 and "json" in probe_res.headers.get("content-type", "").lower():
-                candidate_response_data = probe_res.json()
-    except Exception:
-        pass
+    if candidate.method in (HttpMethod.GET, HttpMethod.OPTIONS, HttpMethod.POST):
+        try:
+            async with httpx.AsyncClient(timeout=timeout_seconds) as probe_client:
+                if candidate.method == HttpMethod.POST:
+                    probe_res = await probe_client.post(
+                        candidate.url,
+                        headers=essential_headers,
+                        params=params,
+                        json=candidate.post_data if isinstance(candidate.post_data, (dict, list)) else None,
+                        content=candidate.post_data if isinstance(candidate.post_data, str) else None,
+                    )
+                else:
+                    probe_res = await probe_client.get(
+                        candidate.url,
+                        headers=essential_headers,
+                        params=params,
+                    )
+                if probe_res.status_code == 200 and "json" in probe_res.headers.get("content-type", "").lower():
+                    candidate_response_data = probe_res.json()
+        except Exception:
+            pass
 
     if isinstance(candidate_response_data, dict):
         # Scan for cursor path in JSON response

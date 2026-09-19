@@ -6,6 +6,10 @@ import httpx
 
 from shadowscout.models import EndpointCandidate, HttpMethod, PrunedRequest
 
+import logging
+
+logger = logging.getLogger("shadowscout.fuzzer.header_pruner")
+
 IGNORED_PSEUDO_HEADERS: Set[str] = {
     ":authority", ":method", ":path", ":scheme", "host", "content-length",
 }
@@ -37,6 +41,7 @@ AUTH_HEADER_HINTS: Set[str] = {
 }
 
 AUTH_ERROR_KEYWORDS = {"unauthorized", "forbidden", "access denied", "invalid token", "authentication required"}
+WRITE_METHODS = {HttpMethod.POST, HttpMethod.PUT, HttpMethod.PATCH, HttpMethod.DELETE}
 
 
 def _is_response_equivalent(baseline_res: httpx.Response, test_res: httpx.Response) -> bool:
@@ -90,6 +95,7 @@ async def prune_request_headers(
     """
     Performs ablative testing on headers and cookies of an intercepted candidate endpoint.
     Drops non-essential telemetry/browser headers to deliver a minimal viable HTTP request.
+    Skips probing entirely for write endpoints (POST, PUT, PATCH, DELETE) to prevent side-effects.
     """
     raw_headers = {
         k.lower(): v
@@ -111,26 +117,34 @@ async def prune_request_headers(
 
     essential_headers = dict(raw_headers)
     essential_cookies = dict(candidate.cookies)
+
+    # FIX #1: Guard side-effects on write endpoints (POST, PUT, PATCH, DELETE)
+    if candidate.method in WRITE_METHODS:
+        logger.warning(f"write endpoint ({candidate.method.value}): probing skipped to prevent side-effects")
+        return PrunedRequest(
+            endpoint_url=candidate.clean_url,
+            method=candidate.method,
+            essential_headers=essential_headers,
+            pruned_headers_count=0,
+            auth_header_detected=auth_header_detected,
+            cookies=essential_cookies,
+            query_params=candidate.query_params,
+            post_data=candidate.post_data,
+            status_code=candidate.status_code,
+            is_reproducible_outside_browser=False,
+        )
+
     pruned_count = 0
     baseline_status = candidate.status_code
 
     async with httpx.AsyncClient(cookies=essential_cookies, follow_redirects=True, timeout=timeout_seconds) as client:
         # Step 1: Verify baseline request outside of Playwright
         try:
-            if candidate.method == HttpMethod.POST:
-                baseline_res = await client.post(
-                    candidate.url,
-                    headers=essential_headers,
-                    params=candidate.query_params,
-                    json=candidate.post_data if isinstance(candidate.post_data, (dict, list)) else None,
-                    content=candidate.post_data if isinstance(candidate.post_data, str) else None,
-                )
-            else:
-                baseline_res = await client.get(
-                    candidate.url,
-                    headers=essential_headers,
-                    params=candidate.query_params,
-                )
+            baseline_res = await client.get(
+                candidate.url,
+                headers=essential_headers,
+                params=candidate.query_params,
+            )
             baseline_status = baseline_res.status_code
         except Exception:
             # If baseline fails to connect, fallback to raw headers and cookies as essential
@@ -154,19 +168,11 @@ async def prune_request_headers(
                 del temp_headers[test_header]
 
                 try:
-                    if candidate.method == HttpMethod.POST:
-                        test_res = await client.post(
-                            candidate.url,
-                            headers=temp_headers,
-                            params=candidate.query_params,
-                            json=candidate.post_data if isinstance(candidate.post_data, (dict, list)) else None,
-                        )
-                    else:
-                        test_res = await client.get(
-                            candidate.url,
-                            headers=temp_headers,
-                            params=candidate.query_params,
-                        )
+                    test_res = await client.get(
+                        candidate.url,
+                        headers=temp_headers,
+                        params=candidate.query_params,
+                    )
 
                     # Strict semantic equivalence check (status + body + non-error)
                     if _is_response_equivalent(baseline_res, test_res):
@@ -179,25 +185,22 @@ async def prune_request_headers(
         if essential_cookies:
             try:
                 async with httpx.AsyncClient(follow_redirects=True, timeout=timeout_seconds) as no_cookie_client:
-                    if candidate.method == HttpMethod.POST:
-                        no_cookie_res = await no_cookie_client.post(
-                            candidate.url,
-                            headers=essential_headers,
-                            params=candidate.query_params,
-                            json=candidate.post_data if isinstance(candidate.post_data, (dict, list)) else None,
-                        )
-                    else:
-                        no_cookie_res = await no_cookie_client.get(
-                            candidate.url,
-                            headers=essential_headers,
-                            params=candidate.query_params,
-                        )
+                    no_cookie_res = await no_cookie_client.get(
+                        candidate.url,
+                        headers=essential_headers,
+                        params=candidate.query_params,
+                    )
 
                     if _is_response_equivalent(baseline_res, no_cookie_res):
                         # Cookies were not required for this endpoint
                         essential_cookies = {}
             except Exception:
                 pass
+
+    # FIX #6(a): Set is_reproducible_outside_browser based on actual baseline success
+    is_reproducible = (baseline_status < 400) and (
+        baseline_status == candidate.status_code or baseline_status == 200
+    )
 
     return PrunedRequest(
         endpoint_url=candidate.clean_url,
@@ -209,5 +212,5 @@ async def prune_request_headers(
         query_params=candidate.query_params,
         post_data=candidate.post_data,
         status_code=baseline_status,
-        is_reproducible_outside_browser=True,
+        is_reproducible_outside_browser=is_reproducible,
     )

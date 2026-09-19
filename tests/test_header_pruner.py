@@ -25,3 +25,28 @@ async def test_header_pruner_detects_auth():
     pruned = await prune_request_headers(candidate, timeout_seconds=1.0)
     assert pruned.auth_header_detected == "authorization"
     assert ":authority" not in pruned.essential_headers
+
+
+@pytest.mark.asyncio
+async def test_header_pruner_skips_write_endpoints():
+    for write_method in [HttpMethod.POST, HttpMethod.PUT, HttpMethod.PATCH, HttpMethod.DELETE]:
+        candidate = EndpointCandidate(
+            endpoint_id=f"c-{write_method.value}",
+            url="https://api.example.com/orders",
+            clean_url="https://api.example.com/orders",
+            method=write_method,
+            status_code=201,
+            raw_headers={
+                "authorization": "Bearer secret",
+                "sec-ch-ua": '"Chromium";v="124"',
+            },
+            post_data={"item": "book", "qty": 1},
+        )
+
+        pruned = await prune_request_headers(candidate, timeout_seconds=1.0)
+        # Must skip all probing
+        assert pruned.is_reproducible_outside_browser is False
+        assert pruned.pruned_headers_count == 0
+        assert "authorization" in pruned.essential_headers
+        assert "sec-ch-ua" in pruned.essential_headers
+        assert pruned.post_data == {"item": "book", "qty": 1}

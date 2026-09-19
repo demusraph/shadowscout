@@ -1,9 +1,46 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from shadowscout.models import EndpointCandidate, PaginationConfig, PaginationType, PrunedRequest
 from shadowscout.codegen.schema_inferrer import infer_pydantic_models
+
+
+class AuthenticationExpiredError(Exception):
+    """Raised when authentication credentials (tokens or cookies) expire or return 401/403."""
+    pass
+
+
+def extract_cursor_from_payload(payload: Any, path: Optional[str] = None) -> Optional[str]:
+    """Extracts next cursor value from payload using configured path or common heuristics."""
+    if not isinstance(payload, dict):
+        return None
+
+    if path:
+        curr = payload
+        parts = path.strip("$.").split(".")
+        for part in parts:
+            if isinstance(curr, dict) and part in curr:
+                curr = curr[part]
+            else:
+                curr = None
+                break
+        if curr is not None and isinstance(curr, (str, int)):
+            return str(curr)
+
+    # Heuristic fallback for common cursor field names (scalars only, skip dicts/lists)
+    for candidate_key in ["next_cursor", "nextCursor", "end_cursor", "cursor", "next_page_token", "nextToken"]:
+        if candidate_key in payload and payload[candidate_key] is not None:
+            val = payload[candidate_key]
+            if isinstance(val, (str, int)):
+                return str(val)
+        if "page_info" in payload and isinstance(payload["page_info"], dict):
+            if candidate_key in payload["page_info"] and payload["page_info"][candidate_key] is not None:
+                val = payload["page_info"][candidate_key]
+                if isinstance(val, (str, int)):
+                    return str(val)
+
+    return None
 
 
 def generate_standalone_scraper(
@@ -106,18 +143,27 @@ def extract_cursor_from_payload(payload: Any, path: Optional[str]) -> Optional[s
             else:
                 curr = None
                 break
-        if curr is not None:
+        if curr is not None and isinstance(curr, (str, int)):
             return str(curr)
 
-    # Heuristic fallback for common cursor field names
+    # Heuristic fallback for common cursor field names (scalars only, skip dicts/lists)
     for candidate_key in ["next_cursor", "nextCursor", "end_cursor", "cursor", "next_page_token", "nextToken"]:
-        if candidate_key in payload and payload[candidate_key]:
-            return str(payload[candidate_key])
+        if candidate_key in payload and payload[candidate_key] is not None:
+            val = payload[candidate_key]
+            if isinstance(val, (str, int)):
+                return str(val)
         if "page_info" in payload and isinstance(payload["page_info"], dict):
-            if candidate_key in payload["page_info"] and payload["page_info"][candidate_key]:
-                return str(payload["page_info"][candidate_key])
+            if candidate_key in payload["page_info"] and payload["page_info"][candidate_key] is not None:
+                val = payload["page_info"][candidate_key]
+                if isinstance(val, (str, int)):
+                    return str(val)
 
     return None
+
+
+class AuthenticationExpiredError(Exception):
+    """Raised when authentication credentials (tokens or cookies) expire or return 401/403."""
+    pass
 
 
 class DirectScraper:
@@ -168,6 +214,14 @@ class DirectScraper:
                     items = extract_items_from_payload(payload, ARRAY_KEY_PATH)
                     next_cursor = extract_cursor_from_payload(payload, CURSOR_JSON_PATH)
                     return items, next_cursor
+                elif resp.status_code in (401, 403):
+                    err_msg = (
+                        f"[CRITICAL] Authentication failed (HTTP {{resp.status_code}}) on page {{page_num}}. "
+                        "The authorization token, session cookie, or API key has expired or been revoked. "
+                        "Action required: manually refresh credentials in ESSENTIAL_HEADERS / ESSENTIAL_COOKIES or re-run 'shadowscout sniff'."
+                    )
+                    print(err_msg, file=sys.stderr)
+                    raise AuthenticationExpiredError(err_msg)
                 elif resp.status_code == 429:
                     # Rate limit encountered; back off
                     wait_time = (attempt + 1) * 2.0
@@ -176,6 +230,8 @@ class DirectScraper:
                 else:
                     print(f"[!] HTTP error {{resp.status_code}} on page {{page_num}}", file=sys.stderr)
                     break
+            except AuthenticationExpiredError:
+                raise
             except Exception as exc:
                 print(f"[!] Network exception (attempt {{attempt + 1}}): {{exc}}", file=sys.stderr)
                 await asyncio.sleep(1.0)
@@ -187,39 +243,102 @@ class DirectScraper:
         max_pages: int = 5,
         limit_size: int = DEFAULT_SIZE,
         delay_seconds: float = 0.2,
+        concurrency: int = 5,
     ) -> List[ScrapedItem]:
-        """Runs the scraping loop, handles cursor advancement, and validates items against ScrapedItem model."""
+        """Runs scraping with bounded concurrency (Semaphore) or sequential cursor advancement, preserving items."""
         all_items: List[ScrapedItem] = []
-        current_cursor: Optional[str] = None
 
-        async with httpx.AsyncClient(cookies=ESSENTIAL_COOKIES, follow_redirects=True) as client:
-            for page in range(1, max_pages + 1):
-                raw_items, next_cursor = await self.fetch_page(
-                    client, page_num=page, limit_size=limit_size, cursor=current_cursor
-                )
-                if not raw_items:
-                    print(f"[*] Completed or empty page reached at page {{page}}.")
-                    break
+        try:
+            async with httpx.AsyncClient(cookies=ESSENTIAL_COOKIES, follow_redirects=True) as client:
+                if PAGINATION_TYPE in ("page_number", "offset_limit"):
+                    sem = asyncio.Semaphore(max(1, concurrency))
 
-                for item_dict in raw_items:
-                    try:
-                        validated = ScrapedItem.model_validate(item_dict)
-                        all_items.append(validated)
-                    except Exception:
-                        # Continue even if single item fails strict schema
-                        pass
+                    async def fetch_worker(p: int) -> Tuple[int, List[Dict[str, Any]], Optional[str]]:
+                        async with sem:
+                            if delay_seconds > 0 and p > 1:
+                                await asyncio.sleep(delay_seconds)
+                            raw, cur = await self.fetch_page(client, page_num=p, limit_size=limit_size)
+                            return p, raw, cur
 
-                print(f"[+] Page {{page}}: Extracted {{len(raw_items)}} items (Total: {{len(all_items)}})")
+                    tasks = [fetch_worker(p) for p in range(1, max_pages + 1)]
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
 
-                # Advance cursor for cursor-based pagination
-                if PAGINATION_TYPE == "cursor":
-                    if not next_cursor or next_cursor == current_cursor:
-                        print(f"[*] Cursor exhausted or reached end of stream at page {{page}}.")
-                        break
-                    current_cursor = next_cursor
+                    for res in results:
+                        if isinstance(res, Exception):
+                            if isinstance(res, AuthenticationExpiredError):
+                                raise res
+                            print(f"[!] Page worker encountered error: {{res}}", file=sys.stderr)
+                            continue
 
-                if delay_seconds > 0:
-                    await asyncio.sleep(delay_seconds)
+                        page, raw_items, _ = res
+                        if not raw_items:
+                            continue
+
+                        validation_failures = 0
+                        for item_dict in raw_items:
+                            try:
+                                validated = ScrapedItem.model_validate(item_dict)
+                                all_items.append(validated)
+                            except Exception:
+                                validation_failures += 1
+                                # Preserve raw data via model_construct to eliminate silent data drop
+                                try:
+                                    fallback_item = ScrapedItem.model_construct(**item_dict)
+                                    all_items.append(fallback_item)
+                                except Exception:
+                                    pass
+
+                        if validation_failures > 0:
+                            print(
+                                f"[!] Warning: {{validation_failures}} item(s) on page {{page}} failed strict validation and were preserved via fallback.",
+                                file=sys.stderr,
+                            )
+
+                        print(f"[+] Page {{page}}: Extracted {{len(raw_items)}} items (Total: {{len(all_items)}})")
+                else:
+                    # Sequential execution for cursor or unindexed streams
+                    current_cursor: Optional[str] = None
+                    for page in range(1, max_pages + 1):
+                        raw_items, next_cursor = await self.fetch_page(
+                            client, page_num=page, limit_size=limit_size, cursor=current_cursor
+                        )
+                        if not raw_items:
+                            print(f"[*] Completed or empty page reached at page {{page}}.")
+                            break
+
+                        validation_failures = 0
+                        for item_dict in raw_items:
+                            try:
+                                validated = ScrapedItem.model_validate(item_dict)
+                                all_items.append(validated)
+                            except Exception:
+                                validation_failures += 1
+                                try:
+                                    fallback_item = ScrapedItem.model_construct(**item_dict)
+                                    all_items.append(fallback_item)
+                                except Exception:
+                                    pass
+
+                        if validation_failures > 0:
+                            print(
+                                f"[!] Warning: {{validation_failures}} item(s) on page {{page}} failed strict validation and were preserved via fallback.",
+                                file=sys.stderr,
+                            )
+
+                        print(f"[+] Page {{page}}: Extracted {{len(raw_items)}} items (Total: {{len(all_items)}})")
+
+                        # Advance cursor for cursor-based pagination
+                        if PAGINATION_TYPE == "cursor":
+                            if not next_cursor or next_cursor == current_cursor:
+                                print(f"[*] Cursor exhausted or reached end of stream at page {{page}}.")
+                                break
+                            current_cursor = next_cursor
+
+                        if delay_seconds > 0:
+                            await asyncio.sleep(delay_seconds)
+        except AuthenticationExpiredError as auth_err:
+            print(f"[*] Stopping scraper due to authentication expiration: {{auth_err}}", file=sys.stderr)
+            return all_items
 
         return all_items
 
@@ -256,6 +375,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="High-Speed Standalone API Scraper")
     parser.add_argument("-p", "--pages", type=int, default=5, help="Maximum number of pages to scrape")
     parser.add_argument("-l", "--limit", type=int, default=DEFAULT_SIZE, help="Batch limit per request")
+    parser.add_argument("-c", "--concurrency", type=int, default=5, help="Maximum concurrent requests (asyncio.Semaphore)")
     parser.add_argument("-o", "--output", type=str, default="scraped_data.jsonl", help="Output file path (.jsonl, .json, .csv)")
     parser.add_argument("--test-run", action="store_true", help="Runs single page test with limit 5 for verification")
 
@@ -263,9 +383,10 @@ def main() -> None:
 
     max_pages = 1 if args.test_run else args.pages
     batch_size = 5 if args.test_run else args.limit
+    concurrency = 1 if args.test_run else args.concurrency
 
     scraper = DirectScraper()
-    items = asyncio.run(scraper.run(max_pages=max_pages, limit_size=batch_size))
+    items = asyncio.run(scraper.run(max_pages=max_pages, limit_size=batch_size, concurrency=concurrency))
 
     if args.test_run:
         print(f"=== TEST RUN VERIFICATION ===")

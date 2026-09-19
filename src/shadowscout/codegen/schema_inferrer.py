@@ -48,12 +48,18 @@ def _infer_type(values: List[Any]) -> Tuple[str, bool]:
         else:
             type_str = "Any"
     elif types_seen == {int, float}:
-        type_str = "float"
+        type_str = "Union[int, float]"
+    elif types_seen == {int, str}:
+        type_str = "Union[int, str]"
+    elif types_seen == {float, str}:
+        type_str = "Union[float, str]"
+    elif types_seen == {int, float, str}:
+        type_str = "Union[int, float, str]"
     else:
         type_str = "Union[str, Any]"
 
     if is_nullable:
-        return f"{type_str} | None", True
+        return f"Optional[{type_str}]", True
     return type_str, False
 
 

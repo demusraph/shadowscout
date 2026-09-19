@@ -30,7 +30,7 @@ from shadowscout.fuzzer.header_pruner import prune_request_headers
 from shadowscout.fuzzer.pagination import detect_pagination_strategy
 from shadowscout.codegen.template_engine import generate_standalone_scraper
 from shadowscout.codegen.openapi_exporter import export_openapi_spec
-from shadowscout.models import ScoutResult
+from shadowscout.models import HttpMethod, ScoutResult
 
 app = typer.Typer(
     name="shadowscout",
@@ -78,11 +78,20 @@ async def _run_pipeline(
             )
 
         best_candidate = candidates[0]
+        is_write_endpoint = best_candidate.method in {
+            HttpMethod.POST, HttpMethod.PUT, HttpMethod.PATCH, HttpMethod.DELETE
+        }
 
         # Step 3: Header Ablation & Minimization
-        t3 = progress.add_task(f"[cyan]Testing header ablation on {best_candidate.clean_url}...", total=None)
-        pruned = await prune_request_headers(best_candidate)
-        progress.update(t3, description=f"[green]Pruned {pruned.pruned_headers_count} non-essential headers")
+        if is_write_endpoint:
+            console.print(f"[yellow][!] write endpoint ({best_candidate.method.value}): probing skipped[/yellow]")
+            t3 = progress.add_task(f"[yellow]Skipping header ablation for write endpoint ({best_candidate.method.value})...", total=None)
+            pruned = await prune_request_headers(best_candidate)
+            progress.update(t3, description=f"[yellow]Write endpoint ({best_candidate.method.value}): probing skipped")
+        else:
+            t3 = progress.add_task(f"[cyan]Testing header ablation on {best_candidate.clean_url}...", total=None)
+            pruned = await prune_request_headers(best_candidate)
+            progress.update(t3, description=f"[green]Pruned {pruned.pruned_headers_count} non-essential headers")
 
         # Step 4: Pagination & Fuzzing Detection
         t4 = progress.add_task("[cyan]Detecting pagination strategy & probing limits...", total=None)
