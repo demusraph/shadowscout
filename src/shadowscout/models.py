@@ -38,6 +38,7 @@ class CapturedRequest(BaseModel):
     method: HttpMethod
     status_code: int
     headers: Dict[str, str] = Field(default_factory=dict)
+    cookies: Dict[str, str] = Field(default_factory=dict)
     query_params: Dict[str, str] = Field(default_factory=dict)
     post_data: Optional[Any] = None
     response_content_type: str = ""
@@ -59,6 +60,7 @@ class EndpointCandidate(BaseModel):
     item_count: int = 0
     sample_items: List[Dict[str, Any]] = Field(default_factory=list)
     raw_headers: Dict[str, str] = Field(default_factory=dict)
+    cookies: Dict[str, str] = Field(default_factory=dict)
     query_params: Dict[str, str] = Field(default_factory=dict)
     post_data: Optional[Any] = None
 

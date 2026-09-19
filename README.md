@@ -12,11 +12,11 @@
 [![Pydantic V2](https://img.shields.io/badge/Schema-Pydantic%20V2-e11d48.svg?style=for-the-badge&logo=pydantic&logoColor=white)](https://docs.pydantic.dev/)
 [![MCP Ready](https://img.shields.io/badge/Protocol-Model%20Context%20Protocol-a855f7.svg?style=for-the-badge)](https://modelcontextprotocol.io/)
 
-*Browse once. Discover hidden backend APIs. Generate standalone, zero-browser Python scrapers that run 100x faster.*
+*Browse once. Discover hidden backend APIs. Generate standalone, zero-browser Python scrapers with native HTTP throughput.*
 
 ---
 
-[Key Features](#-key-features--10x-multipliers) •
+[Key Features](#-key-features--production-architecture) •
 [Quickstart](#-quickstart) •
 [Architecture](#-architecture) •
 [Interactive Demo](#-10-second-zero-config-demo) •
@@ -41,7 +41,7 @@ Modern dynamic Single Page Applications (Next.js, Nuxt, React, Vue) **rarely emb
 * **Observes**: Drives Playwright to trigger dynamic client-side fetches, infinite scrolls, and pagination clicks.
 * **Filters**: Intercepts Chrome DevTools Protocol (CDP) traffic, stripping 95%+ tracking noise (GA4, Sentry, Datadog, TikTok, Meta Pixel).
 * **Scores**: Employs a **Tabular Data Density Heuristic** to isolate primary domain APIs from UI configurations or translations.
-* **Prunes**: Performs **Ablative Header Testing** via `httpx` to determine the *minimum viable request* (strips non-essential browser headers, detects required auth tokens).
+* **Prunes**: Performs **Ablative Header & Cookie Testing** via `httpx` with semantic equivalence checks (validates status code, response body structure, and error-free JSON).
 * **Synthesizes**: Generates a standalone, fully-typed `httpx` Python scraper (`scraper.py`) and an industry-standard **OpenAPI 3.1 specification**.
 * **Self-Verifies**: Executes a subprocess test gate (`--test-run`) before handing code to the user, guaranteeing **100% runnable code**.
 
@@ -52,7 +52,7 @@ Modern dynamic Single Page Applications (Next.js, Nuxt, React, Vue) **rarely emb
 | Benchmark / Metric | Visual Agents (`Browser-Use` / `Skyvern`) | DOM/Markdown (`Crawl4AI` / `Firecrawl`) | `ShadowScout` |
 |---|---|---|---|
 | **Production Runtime** | Heavy Headless Chromium | Headless Chromium Required | **Zero Browser (`httpx` only)** |
-| **Request Latency** | 3,000ms – 15,000ms | 1,000ms – 4,000ms | **10ms – 50ms per request** |
+| **Request Latency** | 3,000ms – 15,000ms | 1,000ms – 4,000ms | **10ms – 50ms (Up to 10x-50x faster)** |
 | **Token Cost in Production** | High ($0.05 - $0.50 per page) | Medium (Markdown context) | **$0.00 (Zero tokens in runtime)** |
 | **Immunity to UI Redesigns** | ❌ Fragile (UI drift breaks clicks) | ❌ Fragile (CSS class updates break DOM) | **✅ Immune (Target stable backend API)** |
 | **Deliverable** | Agent conversation transcript | Raw Markdown / HTML dump | **Standalone `.py` + `openapi.json`** |
@@ -79,7 +79,7 @@ Modern dynamic Single Page Applications (Next.js, Nuxt, React, Vue) **rarely emb
                     ┌──────────────────────────────────────────────┐
                     │ 2. Tabular Density Scorer & Fuzzer           │
                     │    - Ranks JSON arrays by key entropy & size │
-                    │    - Ablative header elimination via httpx   │
+                    │    - Ablative header & cookie elimination    │
                     │    - Detects pagination (page, offset, cursor│
                     └──────────────────────┬───────────────────────┘
                                            │
@@ -95,15 +95,17 @@ Modern dynamic Single Page Applications (Next.js, Nuxt, React, Vue) **rarely emb
 
 ---
 
-## 🛠️ Key Features & 10x Multipliers
+## 🛠️ Key Features & Production Architecture
 
 * 🚀 **Zero-Browser Extraction**: The generated scraper is pure Python with `httpx` connection pooling and async concurrency. No Dockerized Chrome needed in production pipelines.
-* 🧹 **Ablative Header Pruning**: Systematically drops browser pseudo-headers and tracking flags to find the cleanest, minimal reproducible HTTP call.
+* 🍪 **Session Cookie & Auth Persistence**: Automatically extracts and persists browser session cookies and auth tokens (`Bearer`, `X-CSRF-Token`, `X-Api-Key`) into the generated scraper.
+* 🔄 **Cursor & Page-Based Pagination**: Supports numerical offset/limit, page numbers, and dynamic cursor advancement (extracts and passes `next_cursor` across iteration batches).
+* 🧹 **Ablative Header Pruning with Semantic Verification**: Systematically drops browser pseudo-headers and validates that responses remain identical in body structure and error-free.
 * 🛡️ **Autonomous Noise Elimination**: Out-of-the-box blocklist for 50+ analytics, tracking, and error-monitoring SDKs (Google Analytics 4, Meta Pixel, Datadog, Sentry, Mixpanel, Hotjar, TikTok Pixel, Cloudflare Web Analytics, New Relic).
 * 📐 **Pydantic V2 Schema Auto-Inference**: Automatically analyzes response payloads, handles nullability, sanitizes Python reserved keywords (`from`, `class`, `import`), and outputs strongly-typed data validation classes.
 * 📖 **Dual Deliverable (Code + OpenAPI 3.1)**: Reverse-engineers undocumented backend endpoints directly into industry-standard `openapi.json` specs.
 * ✅ **Subprocess Self-Verification Gate**: Before returning success, ShadowScout tests its own generated scraper in an isolated subprocess (`--test-run`) to prove non-empty data extraction.
-* 🔌 **Model Context Protocol (MCP) Native**: Seamlessly integrates into Claude Desktop, Cursor, or Antigravity IDE.
+* 🔌 **Real Model Context Protocol (MCP) Server**: Implements standard JSON-RPC 2.0 MCP protocol (`initialize`, `tools/list`, `tools/call`) providing `sniff_url` and `generate_scraper` to Claude Desktop, Cursor, or Antigravity.
 
 ---
 

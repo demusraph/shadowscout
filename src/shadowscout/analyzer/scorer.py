@@ -144,6 +144,7 @@ def score_candidate_endpoints(captured_requests: List[CapturedRequest]) -> List[
             item_count=item_count,
             sample_items=items[:5],
             raw_headers=req.headers,
+            cookies=req.cookies,
             query_params=req.query_params,
             post_data=req.post_data,
         )

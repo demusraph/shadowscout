@@ -30,6 +30,7 @@ class HarStream:
         response_body: Optional[str | dict | list] = None,
         duration_ms: float = 0.0,
         timestamp: float = 0.0,
+        cookies: Optional[dict[str, str]] = None,
     ) -> Optional[CapturedRequest]:
         """Evaluates an intercepted response; filters noise or stores candidate request."""
         self.total_seen += 1
@@ -52,6 +53,7 @@ class HarStream:
             method=HttpMethod(method.upper()),
             status_code=status_code,
             headers=headers,
+            cookies=cookies or {},
             query_params=query_params,
             post_data=post_data,
             response_content_type=response_content_type,

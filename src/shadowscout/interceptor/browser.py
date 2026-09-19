@@ -84,6 +84,15 @@ class PlaywrightInterceptor:
                         except Exception:
                             body = None
 
+                    # Extract request cookies
+                    req_cookies = {}
+                    cookie_header = headers.get("cookie", "")
+                    if cookie_header:
+                        for part in cookie_header.split(";"):
+                            if "=" in part:
+                                ck, cv = part.strip().split("=", 1)
+                                req_cookies[ck.strip()] = cv.strip()
+
                     captured = self.stream.record_response(
                         id=str(uuid.uuid4())[:8],
                         url=req_url,
@@ -96,6 +105,7 @@ class PlaywrightInterceptor:
                         response_body=body,
                         duration_ms=0.0,
                         timestamp=time.time(),
+                        cookies=req_cookies,
                     )
                     if captured and on_request_captured:
                         on_request_captured(captured)
@@ -113,6 +123,16 @@ class PlaywrightInterceptor:
 
                 # Proactive user interaction simulation
                 await self._simulate_interactions(page, interaction_seconds)
+
+                # Persist full browser session cookies to all captured requests
+                try:
+                    cookies_list = await context.cookies()
+                    session_cookies = {c["name"]: c["value"] for c in cookies_list}
+                    for req in self.stream.captured_requests:
+                        for ck, cv in session_cookies.items():
+                            req.cookies.setdefault(ck, cv)
+                except Exception:
+                    pass
 
             except Exception as e:
                 # Capture whatever we got even if networkidle timed out
